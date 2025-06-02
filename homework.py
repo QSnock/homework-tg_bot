@@ -4,9 +4,12 @@ import time
 import logging
 from datetime import datetime, timedelta
 
+from http import HTTPStatus
+
 import requests
 from dotenv import load_dotenv
 from telebot import TeleBot
+from telebot.apihelper import ApiException as TelegramApiException
 
 load_dotenv()
 
@@ -35,6 +38,12 @@ logger.setLevel(logging.DEBUG)
 logger.addHandler(handler)
 
 
+class ApiRequestError(Exception):
+    """Ошибка при запросе к API Практикум.Домашка."""
+
+    pass
+
+
 def check_tokens():
     """Проверяет наличие важных переменных окружения."""
     tokens = {
@@ -56,35 +65,44 @@ def send_message(bot, message):
     """Отправляет сообщение в Telegram."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
-        logger.debug(f'Бот отправил сообщение: "{message}"')
-    except Exception as error:
+    except (TelegramApiException, requests.RequestException) as error:
         logger.error(f'Сбой при отправке сообщения: {error}')
+        return
+    logger.debug(f'Бот отправил сообщение: "{message}"')
 
 
 def get_api_answer(timestamp):
     """Делает запрос к API Практикум.Домашка и возвращает ответ."""
-    params = {'from_date': timestamp}
+    request_params = {
+        'url': ENDPOINT,
+        'headers': HEADERS,
+        'params': {'from_date': timestamp}
+    }
     try:
-        response = requests.get(ENDPOINT, headers=HEADERS, params=params)
-        if response.status_code != 200:
-            raise Exception(
-                f'Эндпоинт {ENDPOINT} недоступен.'
-                f'Код ответа API: {response.status_code}'
-            )
-        return response.json()
+        response = requests.get(**request_params)
     except requests.RequestException as error:
-        raise Exception(f'Ошибка запроса к API: {error}')
+        raise ApiRequestError(f'Ошибка запроса к API: {error}') from error
+    if response.status_code != HTTPStatus.OK:
+        raise requests.HTTPError(
+            f'Эндпоинт {ENDPOINT} недоступен. Параметры: {request_params}.'
+            f'Код ответа API: {response.status_code}'
+        )
+    return response.json()
 
 
 def check_response(response):
     """Проверяет структуру ответа."""
     logger.debug('Проверка структуры ответа.')
+    keys = ('homeworks', 'current_date')
     if not isinstance(response, dict):
-        raise TypeError('Ответ не является словарём.')
-    if 'homeworks' not in response or 'current_date' not in response:
-        raise KeyError('В ответе API отсутствуют необходимые ключи.')
+        raise TypeError(
+            f'Ответ не словарь, полученный тип данных: {type(response)}.'
+        )
+    for key in keys:
+        if key not in response:
+            raise KeyError(f'В ответе API отсутствует ключ {key}.')
     if not isinstance(response['homeworks'], list):
-        raise TypeError('Ключ "homeworks" не является списком.')
+        raise TypeError(f'Ключ "homeworks" не список, а {type(response)}.')
     logger.debug('Структура ответа валидна.')
 
 
